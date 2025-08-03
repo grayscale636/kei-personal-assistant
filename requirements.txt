@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+discord.py
+httpx
+python-dotenv
+aiosqlite==0.19.0

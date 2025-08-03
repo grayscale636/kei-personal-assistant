@@ -1,0 +1,20 @@
+version: "3.3"
+
+services:
+  irm-api-bot-dc:
+    build: .
+    ports:
+      - 8002:8000
+    image: irm-api-bot-dc
+    container_name: irm-api-bot-dc
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data  # Persist database files
+    networks:
+      - irmnet-service
+
+networks:
+  irmnet-service:
+    external: true
