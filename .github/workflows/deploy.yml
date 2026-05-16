@@ -1,0 +1,43 @@
+name: Deploy Kei Bot
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          port: ${{ secrets.DEPLOY_PORT || '22' }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd /home/gery/Documents/projects/AI/bot_dc
+
+            # Store current image ID before pull
+            OLD_IMAGE=$(docker compose images -q irm-api-bot-dc 2>/dev/null || echo "")
+
+            # Pull latest
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Rebuild & restart
+            docker compose up -d --build
+
+            # Clean up old image if replaced
+            NEW_IMAGE=$(docker compose images -q irm-api-bot-dc 2>/dev/null || echo "")
+            if [ -n "$OLD_IMAGE" ] && [ "$OLD_IMAGE" != "$NEW_IMAGE" ]; then
+              docker image rm "$OLD_IMAGE" 2>/dev/null || true
+            fi
+
+            # Clean dangling images
+            docker image prune -f
+
+            echo "✅ Deploy complete!"
+            docker ps --filter name=irm-api-bot-dc --format "{{.Names}} {{.Status}}"
