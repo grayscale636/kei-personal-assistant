@@ -1,5 +1,3 @@
-version: "3.3"
-
 services:
   irm-api-bot-dc:
     build: .
@@ -10,8 +8,6 @@ services:
     restart: always
     env_file:
       - .env
-    volumes:
-      - ./data:/app/data  # Persist database files
     networks:
       - irmnet-service
 
