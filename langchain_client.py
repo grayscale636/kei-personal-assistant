@@ -9,11 +9,62 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 # Langchain 1.3.x — ConversationBufferMemory pindah ke langchain_classic
 from langchain_classic.memory import ConversationBufferMemory
-from langchain_classic.chains import ConversationChain
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 load_dotenv()
+
+
+LANG_MAP = {
+    'id': 'Bahasa Indonesia',
+    'en': 'English',
+    'jawa': 'Bahasa Jawa (informal, ngoko)',
+    'sunda': 'Bahasa Sunda (informal)',
+}
+
+TONE_MAP = {
+    'casual': 'a friendly, casual tone',
+    'formal': 'a formal, professional tone',
+    'santai': 'a very relaxed, slang-heavy tone',
+    'sarkas': 'a witty, lightly sarcastic tone',
+}
+
+LENGTH_MAP = {
+    'short': 'Keep responses under 30 words unless detail is explicitly requested.',
+    'normal': 'Keep responses concise but informative.',
+    'detailed': 'Provide thorough, detailed responses with examples when relevant.',
+}
+
+EMOJI_MAP = {
+    'none': 'Do not use emojis at all.',
+    'minimal': 'Use emojis sparingly — at most 1 per response.',
+    'normal': 'Use emojis naturally to enhance expressiveness.',
+    'heavy': 'Use emojis frequently and expressively.',
+}
+
+
+def build_system_prompt(prefs=None):
+    """Generate a system prompt string from user preferences."""
+    p = {
+        'lang': 'id',
+        'tone': 'casual',
+        'nickname': None,
+        'response_length': 'short',
+        'emoji_level': 'minimal',
+    }
+    if prefs:
+        p.update({k: v for k, v in prefs.items() if v is not None or k == 'nickname'})
+
+    parts = [
+        "You are Kei, a helpful AI assistant in a Discord server.",
+        f"Respond in {LANG_MAP.get(p['lang'], LANG_MAP['id'])} with {TONE_MAP.get(p['tone'], TONE_MAP['casual'])}.",
+        LENGTH_MAP.get(p['response_length'], LENGTH_MAP['short']),
+        EMOJI_MAP.get(p['emoji_level'], EMOJI_MAP['minimal']),
+    ]
+    if p.get('nickname'):
+        parts.append(f'Address the user as "{p["nickname"]}".')
+
+    return " ".join(parts)
 
 class LangchainDeepSeekClient:
     def __init__(self):
@@ -75,34 +126,26 @@ class LangchainDeepSeekClient:
             )
         return self.conversation_memories[conversation_id]
     
-    async def ask(self, query, user_id, conversation_id=None):
+    async def ask(self, query, user_id, conversation_id=None, prefs=None):
         try:
             if not conversation_id:
                 conversation_id = f"user_{user_id}_default"
-            
+
             memory = self.get_memory(conversation_id)
-            
-            conversation = ConversationChain(
-                llm=self.llm,
-                memory=memory,
-                verbose=False
-            )
-            
-            system_prompt = """You are Kei, a helpful AI assistant in a Discord server.
-CRITICAL RULES:
-- If user asks a simple yes/no or short question, answer in UNDER 12 WORDS.
-- Keep all responses as short as possible unless user asks for detail.
-- Be friendly, concise, and helpful."""
-            
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=query)
-            ]
-            
-            response = await conversation.apredict(input=query)
-            
-            return response, conversation_id
-            
+            system_prompt = build_system_prompt(prefs)
+
+            messages = [SystemMessage(content=system_prompt)]
+            messages.extend(memory.chat_memory.messages)
+            messages.append(HumanMessage(content=query))
+
+            response = await self.llm.ainvoke(messages)
+            response_text = response.content
+
+            memory.chat_memory.add_user_message(query)
+            memory.chat_memory.add_ai_message(response_text)
+
+            return response_text, conversation_id
+
         except Exception as e:
             print(f"[ERROR] Langchain DeepSeek request failed: {e}")
             return "Sorry, I'm having trouble processing your request.", conversation_id
@@ -121,6 +164,6 @@ def get_langchain_client():
         _client_instance = LangchainDeepSeekClient()
     return _client_instance
 
-async def ask_langchain(query, user_id, conversation_id=None):
+async def ask_langchain(query, user_id, conversation_id=None, prefs=None):
     client = get_langchain_client()
-    return await client.ask(query, user_id, conversation_id)
+    return await client.ask(query, user_id, conversation_id, prefs=prefs)

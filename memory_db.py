@@ -5,6 +5,24 @@ import asyncio
 import aiosqlite
 import os
 
+VALID_PREFS = {
+    'lang': ['id', 'en', 'jawa', 'sunda'],
+    'tone': ['casual', 'formal', 'santai', 'sarkas'],
+    'response_length': ['short', 'normal', 'detailed'],
+    'emoji_level': ['none', 'minimal', 'normal', 'heavy'],
+}
+
+DEFAULT_PREFS = {
+    'lang': 'id',
+    'tone': 'casual',
+    'nickname': None,
+    'response_length': 'short',
+    'emoji_level': 'minimal',
+}
+
+NICKNAME_MAX_LEN = 32
+
+
 class BotMemoryDB:
     def __init__(self, db_path="data/bot_memory.db"):
         self.db_path = db_path
@@ -34,10 +52,22 @@ class BotMemoryDB:
             """)
             
             await db.execute("""
-                CREATE INDEX IF NOT EXISTS idx_search 
+                CREATE INDEX IF NOT EXISTS idx_search
                 ON conversations(message, response)
             """)
-            
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS user_preferences (
+                    user_id TEXT PRIMARY KEY,
+                    lang TEXT DEFAULT 'id',
+                    tone TEXT DEFAULT 'casual',
+                    nickname TEXT,
+                    response_length TEXT DEFAULT 'short',
+                    emoji_level TEXT DEFAULT 'minimal',
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             await db.commit()
             print(f"[✓] Database initialized at {self.db_path}")
     
@@ -184,6 +214,73 @@ class BotMemoryDB:
             print(f"[ERROR] Failed to purge channel data: {e}")
             return 0
     
+    async def get_user_preferences(self, user_id):
+        """Get user preferences, fallback to defaults if not set."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute("""
+                    SELECT lang, tone, nickname, response_length, emoji_level
+                    FROM user_preferences WHERE user_id = ?
+                """, (str(user_id),)) as cursor:
+                    row = await cursor.fetchone()
+                    if not row:
+                        return dict(DEFAULT_PREFS)
+                    return {
+                        'lang': row[0],
+                        'tone': row[1],
+                        'nickname': row[2],
+                        'response_length': row[3],
+                        'emoji_level': row[4],
+                    }
+        except Exception as e:
+            print(f"[ERROR] Failed to get user preferences: {e}")
+            return dict(DEFAULT_PREFS)
+
+    async def set_user_preferences(self, user_id, **updates):
+        """Upsert user preferences. Returns the full updated prefs dict."""
+        current = await self.get_user_preferences(user_id)
+        current.update(updates)
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    INSERT INTO user_preferences
+                        (user_id, lang, tone, nickname, response_length, emoji_level, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        lang = excluded.lang,
+                        tone = excluded.tone,
+                        nickname = excluded.nickname,
+                        response_length = excluded.response_length,
+                        emoji_level = excluded.emoji_level,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (
+                    str(user_id),
+                    current['lang'],
+                    current['tone'],
+                    current['nickname'],
+                    current['response_length'],
+                    current['emoji_level'],
+                ))
+                await db.commit()
+            return current
+        except Exception as e:
+            print(f"[ERROR] Failed to set user preferences: {e}")
+            return current
+
+    async def reset_user_preferences(self, user_id):
+        """Delete the user's prefs row so defaults apply again."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    "DELETE FROM user_preferences WHERE user_id = ?",
+                    (str(user_id),),
+                )
+                await db.commit()
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to reset user preferences: {e}")
+            return False
+
     async def get_database_info(self):
         """Get overall database statistics"""
         try:
