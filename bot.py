@@ -2,15 +2,17 @@ import discord
 import os
 import asyncio
 from datetime import datetime, timedelta
-from dify_client import ask_dify
+from langchain_client import ask_langchain
 from dotenv import load_dotenv
 from memory_db import BotMemoryDB
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# print(f"TOKEN loaded: {TOKEN is not None}")
-# print(f"DIFY_API_URL: {os.getenv('DIFY_API_URL')}")
+print(f"🚀 Starting bot @Kei...")
+print(f"✅ TOKEN loaded: {TOKEN is not None}")
+print(f"✅ DEEPSEEK_API_KEY loaded: {os.getenv('DEEPSEEK_API_KEY') is not None}")
+print(f"✅ Langchain migration: COMPLETE")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -180,7 +182,7 @@ async def on_message(message):
         print(f"[DEBUG] Channel context: {len(channel_context)} chars")
         
         # Get AI response
-        response_text, new_conversation_id = await ask_dify(enhanced_query, str(message.author.id), conversation_id)
+        response_text, new_conversation_id = await ask_langchain(enhanced_query, str(message.author.id), conversation_id)
         
         # Update conversation ID jika baru
         if new_conversation_id:
@@ -188,16 +190,18 @@ async def on_message(message):
             print(f"[DEBUG] Updated conversation_id for channel {message.channel.id}: {new_conversation_id}")
         
         # Save to memory database
-        await memory_db.save_conversation(
-            message.channel.id,
-            message.author.id,
-            message.author.display_name,
-            query,
-            response_text,
-            new_conversation_id or conversation_id
-        )
-        
-        print(f"[✓] Conversation saved to memory database")
+        try:
+            await memory_db.save_conversation(
+                message.channel.id,
+                message.author.id,
+                message.author.display_name,
+                query,
+                response_text,
+                new_conversation_id or conversation_id
+            )
+            print(f"[✓] Conversation saved to memory database")
+        except Exception as e:
+            print(f"[WARN] Failed to save conversation to memory: {e}")
         
         await send_long_message(message.channel, response_text)
 
@@ -238,20 +242,23 @@ async def on_message(message):
         else:
             enhanced_query = query
             
-        response_text, new_conversation_id = await ask_dify(enhanced_query, str(message.author.id), conversation_id)
+        response_text, new_conversation_id = await ask_langchain(enhanced_query, str(message.author.id), conversation_id)
         
         if new_conversation_id:
             channel_conversations[str(message.channel.id)] = new_conversation_id
         
         # Save to memory database
-        await memory_db.save_conversation(
-            message.channel.id,
-            message.author.id,
-            message.author.display_name,
-            query,
-            response_text,
-            new_conversation_id or conversation_id
-        )
+        try:
+            await memory_db.save_conversation(
+                message.channel.id,
+                message.author.id,
+                message.author.display_name,
+                query,
+                response_text,
+                new_conversation_id or conversation_id
+            )
+        except Exception as e:
+            print(f"[WARN] Failed to save conversation to memory: {e}")
             
         await send_long_message(message.channel, response_text)
     
@@ -527,3 +534,6 @@ def run_bot():
     except Exception as e:
         print(f"Bot error: {e}")
         raise
+
+if __name__ == "__main__":
+    run_bot()

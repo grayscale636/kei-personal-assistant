@@ -2,7 +2,7 @@ name: Deploy Kei Bot
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   workflow_dispatch:
 
 jobs:
@@ -24,8 +24,8 @@ jobs:
             OLD_IMAGE=$(docker compose images -q irm-api-bot-dc 2>/dev/null || echo "")
 
             # Pull latest
-            git fetch origin main
-            git reset --hard origin/main
+            git fetch origin master
+            git reset --hard origin/master
 
             # Rebuild & restart
             docker compose up -d --build
