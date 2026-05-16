@@ -1,4 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Environment variables
 .env
-/data
-/__pycache__/*
-*.pyc
+.env.local
+
+# Logs
+*.log
+
+# Runtime / process files
+*.pid
+
+# Data / database
+/data/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local-only docs (kept on disk, not tracked)
+DEPLOYMENT_SUCCESS.md
+MIGRATION_GUIDE.md
+version_track.md
