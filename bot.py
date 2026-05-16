@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timedelta
 from langchain_client import ask_langchain
 from dotenv import load_dotenv
-from memory_db import BotMemoryDB
+from memory_db import BotMemoryDB, VALID_PREFS, NICKNAME_MAX_LEN
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -180,10 +180,15 @@ async def on_message(message):
         print(f"[DEBUG] Enhanced query length: {len(enhanced_query)}")
         print(f"[DEBUG] Memory context: {len(memory_context)} chars")
         print(f"[DEBUG] Channel context: {len(channel_context)} chars")
-        
+
+        # Fetch user preferences (falls back to defaults if unset)
+        user_prefs = await memory_db.get_user_preferences(message.author.id)
+
         # Get AI response
-        response_text, new_conversation_id = await ask_langchain(enhanced_query, str(message.author.id), conversation_id)
-        
+        response_text, new_conversation_id = await ask_langchain(
+            enhanced_query, str(message.author.id), conversation_id, prefs=user_prefs
+        )
+
         # Update conversation ID jika baru
         if new_conversation_id:
             channel_conversations[str(message.channel.id)] = new_conversation_id
@@ -241,9 +246,13 @@ async def on_message(message):
             enhanced_query = f"Konteks:\n{full_context}Pertanyaan: {query}"
         else:
             enhanced_query = query
-            
-        response_text, new_conversation_id = await ask_langchain(enhanced_query, str(message.author.id), conversation_id)
-        
+
+        user_prefs = await memory_db.get_user_preferences(message.author.id)
+
+        response_text, new_conversation_id = await ask_langchain(
+            enhanced_query, str(message.author.id), conversation_id, prefs=user_prefs
+        )
+
         if new_conversation_id:
             channel_conversations[str(message.channel.id)] = new_conversation_id
         
@@ -443,6 +452,73 @@ async def on_message(message):
             print(f"[ERROR] Database info failed: {e}")
             await message.channel.send("❌ Error getting database information")
     
+    # Per-user preferences (lang, tone, nickname, length, emoji)
+    elif message.content.startswith('!kei prefs'):
+        args = message.content[len('!kei prefs'):].strip()
+
+        # List current prefs
+        if not args:
+            prefs = await memory_db.get_user_preferences(message.author.id)
+            embed = discord.Embed(
+                title=f"⚙️ Preferences — {message.author.display_name}",
+                color=0x00ff00,
+            )
+            embed.add_field(name="Language", value=f"`{prefs['lang']}`", inline=True)
+            embed.add_field(name="Tone", value=f"`{prefs['tone']}`", inline=True)
+            embed.add_field(name="Length", value=f"`{prefs['response_length']}`", inline=True)
+            embed.add_field(name="Emoji", value=f"`{prefs['emoji_level']}`", inline=True)
+            nick = prefs.get('nickname') or "(default — Discord name)"
+            embed.add_field(name="Nickname", value=f"`{nick}`", inline=True)
+            embed.set_footer(text="Set: !kei prefs <key>=<value>  •  Reset: !kei prefs reset")
+            await message.channel.send(embed=embed)
+            return
+
+        # Reset to defaults
+        if args.lower() == 'reset':
+            await memory_db.reset_user_preferences(message.author.id)
+            await message.channel.send("🔄 Preferences reset to defaults.")
+            return
+
+        # Parse k=v pairs (space-separated)
+        updates = {}
+        errors = []
+        for pair in args.split():
+            if '=' not in pair:
+                errors.append(f"Format salah: `{pair}` (harus `key=value`)")
+                continue
+            key, value = pair.split('=', 1)
+            key = key.lower().strip()
+            value = value.strip()
+
+            if key == 'nickname':
+                if len(value) > NICKNAME_MAX_LEN:
+                    errors.append(f"`nickname` max {NICKNAME_MAX_LEN} char")
+                else:
+                    updates['nickname'] = value or None
+            elif key in VALID_PREFS:
+                value_lower = value.lower()
+                if value_lower not in VALID_PREFS[key]:
+                    valid = '`, `'.join(VALID_PREFS[key])
+                    errors.append(f"`{key}={value}` invalid. Valid: `{valid}`")
+                else:
+                    updates[key] = value_lower
+            else:
+                all_keys = list(VALID_PREFS.keys()) + ['nickname']
+                keys_str = '`, `'.join(all_keys)
+                errors.append(f"Key `{key}` gak dikenal. Valid keys: `{keys_str}`")
+
+        if errors:
+            await message.channel.send("❌ " + "\n❌ ".join(errors))
+            return
+
+        if not updates:
+            await message.channel.send("❌ Gak ada yang di-update. Usage: `!kei prefs <key>=<value>`")
+            return
+
+        await memory_db.set_user_preferences(message.author.id, **updates)
+        applied = ', '.join(f"`{k}={v}`" for k, v in updates.items())
+        await message.channel.send(f"✅ Preferences updated: {applied}")
+
     # Help command
     elif message.content.startswith('!kei help'):
         help_embed = discord.Embed(title="🤖 Kei Bot Commands", color=0x00ff00)
@@ -454,6 +530,11 @@ async def on_message(message):
         help_embed.add_field(
             name="🗃️ Memory Commands",
             value="`!kei search <keyword>` - Search this channel\n`!kei gsearch <keyword>` - 🌐 Global search (all channels)\n`!kei stats` - Channel statistics\n`!kei dbinfo` - Database overview",
+            inline=False
+        )
+        help_embed.add_field(
+            name="⚙️ Preferences",
+            value="`!kei prefs` - Show your preferences\n`!kei prefs <key>=<value>` - Set prefs (lang, tone, nickname, response_length, emoji_level)\n`!kei prefs reset` - Reset to defaults",
             inline=False
         )
         help_embed.add_field(
