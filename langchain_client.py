@@ -167,3 +167,8 @@ def get_langchain_client():
 async def ask_langchain(query, user_id, conversation_id=None, prefs=None):
     client = get_langchain_client()
     return await client.ask(query, user_id, conversation_id, prefs=prefs)
+
+
+async def analyze_image_url(image_url, prompt):
+    client = get_langchain_client()
+    return await client.analyze_image(image_url, prompt)

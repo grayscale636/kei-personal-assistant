@@ -2,7 +2,7 @@ import discord
 import os
 import asyncio
 from datetime import datetime, timedelta
-from langchain_client import ask_langchain
+from langchain_client import ask_langchain, analyze_image_url
 from dotenv import load_dotenv
 from memory_db import BotMemoryDB, VALID_PREFS, NICKNAME_MAX_LEN
 
@@ -138,10 +138,32 @@ async def on_message(message):
     # Deteksi jika pesan mention bot
     if bot.user in message.mentions:
         query = message.content.replace(f"<@{bot.user.id}>", "").strip()
+
+        # Image-attachment flow: if any image attached, route to vision model
+        image_url = next(
+            (a.url for a in message.attachments
+             if a.content_type and a.content_type.startswith('image/')),
+            None,
+        )
+        if image_url:
+            await message.channel.typing()
+            prompt = query or "Tolong jelaskan dan analisis gambar ini secara singkat."
+            response_text = await analyze_image_url(image_url, prompt)
+            await send_long_message(message.channel, response_text)
+            try:
+                await memory_db.save_conversation(
+                    message.channel.id, message.author.id,
+                    message.author.display_name,
+                    f"[image] {query}".strip(), response_text, None,
+                )
+            except Exception as e:
+                print(f"[WARN] Failed to save image convo: {e}")
+            return
+
         if not query:
             await message.channel.send("Iya kak? Mention doang nih? 😄")
             return
-            
+
         await message.channel.typing()
         
         # Get conversation ID for this channel
