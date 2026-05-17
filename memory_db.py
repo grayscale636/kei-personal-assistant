@@ -39,37 +39,93 @@ class BotMemoryDB:
         self.pool = None
 
     async def init_db(self):
-        """Initialize connection pool and create tables."""
+        """Initialize connection pool and create tables (idempotent)."""
         self.pool = await asyncpg.create_pool(
             self.db_url, min_size=1, max_size=5
         )
         async with self.pool.acquire() as conn:
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS conversations (
-                    id SERIAL PRIMARY KEY,
-                    channel_id TEXT,
-                    user_id TEXT,
-                    username TEXT,
-                    message TEXT,
-                    response TEXT,
-                    conversation_id TEXT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id        TEXT PRIMARY KEY,
+                    username       TEXT,
+                    first_seen     TIMESTAMPTZ DEFAULT NOW(),
+                    last_seen      TIMESTAMPTZ DEFAULT NOW(),
+                    total_messages INT DEFAULT 0
                 )
             """)
             await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_channel_timestamp
-                ON conversations(channel_id, timestamp)
+                CREATE TABLE IF NOT EXISTS channels (
+                    channel_id   TEXT PRIMARY KEY,
+                    channel_name TEXT,
+                    guild_id     TEXT,
+                    first_seen   TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id              SERIAL PRIMARY KEY,
+                    channel_id      TEXT REFERENCES channels(channel_id) ON DELETE SET NULL,
+                    user_id         TEXT REFERENCES users(user_id) ON DELETE SET NULL,
+                    username        TEXT,
+                    message         TEXT,
+                    response        TEXT,
+                    conversation_id TEXT,
+                    created_at      TIMESTAMPTZ DEFAULT NOW(),
+                    metadata        JSONB DEFAULT '{}'::jsonb
+                )
             """)
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_preferences (
-                    user_id TEXT PRIMARY KEY,
-                    lang TEXT DEFAULT 'id',
-                    tone TEXT DEFAULT 'casual',
-                    nickname TEXT,
-                    response_length TEXT DEFAULT 'short',
-                    emoji_level TEXT DEFAULT 'minimal',
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    user_id         TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    lang            TEXT DEFAULT 'id'      CHECK (lang IN ('id','en','jawa','sunda')),
+                    tone            TEXT DEFAULT 'casual'  CHECK (tone IN ('casual','formal','santai','sarkas')),
+                    nickname        TEXT,
+                    response_length TEXT DEFAULT 'short'   CHECK (response_length IN ('short','normal','detailed')),
+                    emoji_level     TEXT DEFAULT 'minimal' CHECK (emoji_level IN ('none','minimal','normal','heavy')),
+                    updated_at      TIMESTAMPTZ DEFAULT NOW()
                 )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_channel_created_at
+                ON conversations(channel_id, created_at)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversations_user_id
+                ON conversations(user_id)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversations_message_fts
+                ON conversations USING GIN (
+                    to_tsvector('simple', coalesce(message,'') || ' ' || coalesce(response,''))
+                )
+            """)
+            # Trigger: auto-upsert users + channels on conversation insert
+            await conn.execute("""
+                CREATE OR REPLACE FUNCTION ensure_user_channel() RETURNS TRIGGER AS $$
+                BEGIN
+                    IF NEW.user_id IS NOT NULL THEN
+                        INSERT INTO users (user_id, username, first_seen, last_seen, total_messages)
+                        VALUES (NEW.user_id, NEW.username, NOW(), NOW(), 1)
+                        ON CONFLICT (user_id) DO UPDATE SET
+                            username       = COALESCE(EXCLUDED.username, users.username),
+                            last_seen      = NOW(),
+                            total_messages = users.total_messages + 1;
+                    END IF;
+                    IF NEW.channel_id IS NOT NULL THEN
+                        INSERT INTO channels (channel_id) VALUES (NEW.channel_id)
+                        ON CONFLICT (channel_id) DO NOTHING;
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql
+            """)
+            await conn.execute("""
+                DROP TRIGGER IF EXISTS trg_conversations_ensure_refs ON conversations
+            """)
+            await conn.execute("""
+                CREATE TRIGGER trg_conversations_ensure_refs
+                    BEFORE INSERT ON conversations
+                    FOR EACH ROW EXECUTE FUNCTION ensure_user_channel()
             """)
         print(f"[✓] PostgreSQL pool initialized")
 
@@ -90,10 +146,10 @@ class BotMemoryDB:
         try:
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch("""
-                    SELECT username, message, response, timestamp
+                    SELECT username, message, response, created_at
                     FROM conversations
-                    WHERE channel_id = $1 AND timestamp > $2
-                    ORDER BY timestamp DESC
+                    WHERE channel_id = $1 AND created_at > $2
+                    ORDER BY created_at DESC
                     LIMIT $3
                 """, str(channel_id), since_date, limit)
 
@@ -102,7 +158,7 @@ class BotMemoryDB:
                         'username': r['username'],
                         'message': r['message'],
                         'response': r['response'],
-                        'timestamp': _ts(r['timestamp']),
+                        'timestamp': _ts(r['created_at']),
                     }
                     for r in rows
                 ]
@@ -115,28 +171,30 @@ class BotMemoryDB:
 
     async def search_conversations(self, keyword, channel_id=None, days=30, limit=10):
         since_date = datetime.now() - timedelta(days=days)
-        like = f"%{keyword}%"
+        # Full-text search using GIN index on (message || response)
         try:
             async with self.pool.acquire() as conn:
                 if channel_id:
                     rows = await conn.fetch("""
-                        SELECT channel_id, username, message, response, timestamp
+                        SELECT channel_id, username, message, response, created_at
                         FROM conversations
-                        WHERE (message ILIKE $1 OR response ILIKE $1)
-                          AND channel_id = $2 AND timestamp > $3
-                        ORDER BY timestamp DESC LIMIT $4
-                    """, like, str(channel_id), since_date, limit)
+                        WHERE to_tsvector('simple', coalesce(message,'') || ' ' || coalesce(response,''))
+                              @@ plainto_tsquery('simple', $1)
+                          AND channel_id = $2 AND created_at > $3
+                        ORDER BY created_at DESC LIMIT $4
+                    """, keyword, str(channel_id), since_date, limit)
                 else:
                     rows = await conn.fetch("""
-                        SELECT channel_id, username, message, response, timestamp
+                        SELECT channel_id, username, message, response, created_at
                         FROM conversations
-                        WHERE (message ILIKE $1 OR response ILIKE $1)
-                          AND timestamp > $2
-                        ORDER BY timestamp DESC LIMIT $3
-                    """, like, since_date, limit)
+                        WHERE to_tsvector('simple', coalesce(message,'') || ' ' || coalesce(response,''))
+                              @@ plainto_tsquery('simple', $1)
+                          AND created_at > $2
+                        ORDER BY created_at DESC LIMIT $3
+                    """, keyword, since_date, limit)
 
                 results = [
-                    (r['channel_id'], r['username'], r['message'], r['response'], _ts(r['timestamp']))
+                    (r['channel_id'], r['username'], r['message'], r['response'], _ts(r['created_at']))
                     for r in rows
                 ]
                 print(f"[DEBUG] Found {len(results)} search results for '{keyword}'")
@@ -152,10 +210,10 @@ class BotMemoryDB:
                 row = await conn.fetchrow("""
                     SELECT COUNT(*) AS total_conversations,
                            COUNT(DISTINCT user_id) AS unique_users,
-                           MIN(timestamp) AS first_message,
-                           MAX(timestamp) AS last_message
+                           MIN(created_at) AS first_message,
+                           MAX(created_at) AS last_message
                     FROM conversations
-                    WHERE channel_id = $1 AND timestamp > $2
+                    WHERE channel_id = $1 AND created_at > $2
                 """, str(channel_id), since_date)
                 return {
                     'total_conversations': row['total_conversations'],
@@ -177,7 +235,7 @@ class BotMemoryDB:
         try:
             async with self.pool.acquire() as conn:
                 result = await conn.execute(
-                    "DELETE FROM conversations WHERE timestamp < $1",
+                    "DELETE FROM conversations WHERE created_at < $1",
                     cutoff_date,
                 )
                 deleted_count = int(result.split()[-1]) if result else 0
@@ -272,8 +330,8 @@ class BotMemoryDB:
                         COUNT(*) AS total_conversations,
                         COUNT(DISTINCT channel_id) AS total_channels,
                         COUNT(DISTINCT user_id) AS total_users,
-                        MIN(timestamp) AS oldest_message,
-                        MAX(timestamp) AS newest_message
+                        MIN(created_at) AS oldest_message,
+                        MAX(created_at) AS newest_message
                     FROM conversations
                 """)
                 return {

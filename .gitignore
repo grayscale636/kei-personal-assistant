@@ -19,8 +19,10 @@ env/
 # Runtime / process files
 *.pid
 
-# Data / database
-/data/
+# Data / database (ignore contents but allow migrations to be tracked)
+/data/*
+!/data/migration/
+!/data/migration/**
 
 # IDE / editor
 .vscode/
