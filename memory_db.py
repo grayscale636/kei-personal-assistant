@@ -1,7 +1,10 @@
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
 import os
 import asyncpg
+
+MIGRATION_DIR = Path(__file__).parent / 'data' / 'migration'
 
 VALID_PREFS = {
     'lang': ['id', 'en', 'jawa', 'sunda'],
@@ -39,95 +42,45 @@ class BotMemoryDB:
         self.pool = None
 
     async def init_db(self):
-        """Initialize connection pool and create tables (idempotent)."""
+        """Create the connection pool and apply any pending migrations."""
         self.pool = await asyncpg.create_pool(
             self.db_url, min_size=1, max_size=5
         )
+        await self._run_migrations()
+        print(f"[✓] PostgreSQL pool ready")
+
+    async def _run_migrations(self):
+        """Apply *.sql files in MIGRATION_DIR in order, tracked by schema_migrations."""
         async with self.pool.acquire() as conn:
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id        TEXT PRIMARY KEY,
-                    username       TEXT,
-                    first_seen     TIMESTAMPTZ DEFAULT NOW(),
-                    last_seen      TIMESTAMPTZ DEFAULT NOW(),
-                    total_messages INT DEFAULT 0
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    filename   TEXT PRIMARY KEY,
+                    applied_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS channels (
-                    channel_id   TEXT PRIMARY KEY,
-                    channel_name TEXT,
-                    guild_id     TEXT,
-                    first_seen   TIMESTAMPTZ DEFAULT NOW()
+            applied = {
+                r['filename']
+                for r in await conn.fetch("SELECT filename FROM schema_migrations")
+            }
+
+            if not MIGRATION_DIR.exists():
+                print(f"[WARN] Migration dir not found: {MIGRATION_DIR}")
+                return
+
+            files = sorted(MIGRATION_DIR.glob('*.sql'))
+            pending = [f for f in files if f.name not in applied]
+            if not pending:
+                print(f"[✓] Schema up to date ({len(applied)} migrations applied)")
+                return
+
+            for f in pending:
+                print(f"[INFO] Applying migration: {f.name}")
+                await conn.execute(f.read_text())
+                await conn.execute(
+                    "INSERT INTO schema_migrations (filename) VALUES ($1)",
+                    f.name,
                 )
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS conversations (
-                    id              SERIAL PRIMARY KEY,
-                    channel_id      TEXT REFERENCES channels(channel_id) ON DELETE SET NULL,
-                    user_id         TEXT REFERENCES users(user_id) ON DELETE SET NULL,
-                    username        TEXT,
-                    message         TEXT,
-                    response        TEXT,
-                    conversation_id TEXT,
-                    created_at      TIMESTAMPTZ DEFAULT NOW(),
-                    metadata        JSONB DEFAULT '{}'::jsonb
-                )
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS user_preferences (
-                    user_id         TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
-                    lang            TEXT DEFAULT 'id'      CHECK (lang IN ('id','en','jawa','sunda')),
-                    tone            TEXT DEFAULT 'casual'  CHECK (tone IN ('casual','formal','santai','sarkas')),
-                    nickname        TEXT,
-                    response_length TEXT DEFAULT 'short'   CHECK (response_length IN ('short','normal','detailed')),
-                    emoji_level     TEXT DEFAULT 'minimal' CHECK (emoji_level IN ('none','minimal','normal','heavy')),
-                    updated_at      TIMESTAMPTZ DEFAULT NOW()
-                )
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_channel_created_at
-                ON conversations(channel_id, created_at)
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_conversations_user_id
-                ON conversations(user_id)
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_conversations_message_fts
-                ON conversations USING GIN (
-                    to_tsvector('simple', coalesce(message,'') || ' ' || coalesce(response,''))
-                )
-            """)
-            # Trigger: auto-upsert users + channels on conversation insert
-            await conn.execute("""
-                CREATE OR REPLACE FUNCTION ensure_user_channel() RETURNS TRIGGER AS $$
-                BEGIN
-                    IF NEW.user_id IS NOT NULL THEN
-                        INSERT INTO users (user_id, username, first_seen, last_seen, total_messages)
-                        VALUES (NEW.user_id, NEW.username, NOW(), NOW(), 1)
-                        ON CONFLICT (user_id) DO UPDATE SET
-                            username       = COALESCE(EXCLUDED.username, users.username),
-                            last_seen      = NOW(),
-                            total_messages = users.total_messages + 1;
-                    END IF;
-                    IF NEW.channel_id IS NOT NULL THEN
-                        INSERT INTO channels (channel_id) VALUES (NEW.channel_id)
-                        ON CONFLICT (channel_id) DO NOTHING;
-                    END IF;
-                    RETURN NEW;
-                END;
-                $$ LANGUAGE plpgsql
-            """)
-            await conn.execute("""
-                DROP TRIGGER IF EXISTS trg_conversations_ensure_refs ON conversations
-            """)
-            await conn.execute("""
-                CREATE TRIGGER trg_conversations_ensure_refs
-                    BEFORE INSERT ON conversations
-                    FOR EACH ROW EXECUTE FUNCTION ensure_user_channel()
-            """)
-        print(f"[✓] PostgreSQL pool initialized")
+                print(f"[✓] Migration applied: {f.name}")
 
     async def save_conversation(self, channel_id, user_id, username, message, response, conversation_id):
         try:
