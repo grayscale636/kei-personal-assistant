@@ -501,6 +501,61 @@ async def on_message(message):
             await message.channel.send("🔄 Preferences reset to defaults.")
             return
 
+        # Detailed help: explain each option
+        if args.lower() == 'help':
+            embed = discord.Embed(
+                title="⚙️ Preferences — Detail Opsi",
+                description="Set: `!kei prefs <key>=<value>`  •  Contoh: `!kei prefs lang=jawa tone=santai`",
+                color=0x00ff00,
+            )
+            embed.add_field(
+                name="🌐 `lang` — Bahasa response  *(default: id)*",
+                value=(
+                    "• `id` — Bahasa Indonesia\n"
+                    "• `en` — English\n"
+                    "• `jawa` — Bahasa Jawa (ngoko)\n"
+                    "• `sunda` — Bahasa Sunda"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="🎭 `tone` — Gaya bicara  *(default: casual)*",
+                value=(
+                    "• `casual` — friendly, santai standar\n"
+                    "• `formal` — formal & profesional\n"
+                    "• `santai` — sangat relax, slang-heavy\n"
+                    "• `sarkas` — witty, agak sarkastis"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="📏 `response_length` — Panjang response  *(default: short)*",
+                value=(
+                    "• `short` — max ~30 kata\n"
+                    "• `normal` — concise tapi informatif\n"
+                    "• `detailed` — panjang & lengkap dengan contoh"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="😀 `emoji_level` — Frekuensi emoji  *(default: minimal)*",
+                value=(
+                    "• `none` — gak pakai emoji sama sekali\n"
+                    "• `minimal` — max 1 emoji per response\n"
+                    "• `normal` — natural\n"
+                    "• `heavy` — banyak banget"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="✏️ `nickname` — Cara bot manggil lo  *(default: nama Discord)*",
+                value="Free text, max 32 char. Contoh: `nickname=bos`, `nickname=kak`",
+                inline=False,
+            )
+            embed.set_footer(text="Reset semua: !kei prefs reset")
+            await message.channel.send(embed=embed)
+            return
+
         # Parse k=v pairs (space-separated)
         updates = {}
         errors = []
@@ -641,13 +696,8 @@ async def on_message(message):
                 "`!kei prefs` — Lihat prefs lo\n"
                 "`!kei prefs <key>=<value> [...]` — Set (bisa multiple)\n"
                 "`!kei prefs reset` — Balik ke default\n\n"
-                "**Valid values:**\n"
-                "• `lang` — `id`, `en`, `jawa`, `sunda`  *(default: id)*\n"
-                "• `tone` — `casual`, `formal`, `santai`, `sarkas`  *(default: casual)*\n"
-                "• `response_length` — `short`, `normal`, `detailed`  *(default: short)*\n"
-                "• `emoji_level` — `none`, `minimal`, `normal`, `heavy`  *(default: minimal)*\n"
-                "• `nickname` — free text, max 32 char  *(default: Discord display name)*\n\n"
-                "Contoh: `!kei prefs lang=jawa tone=santai nickname=mas`"
+                "Contoh: `!kei prefs lang=jawa tone=santai nickname=mas`\n"
+                "Detail tiap opsi: `!kei prefs help`"
             ),
             inline=False,
         )
