@@ -14,5 +14,5 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 # Copy application code
 COPY . /app
 
-# Use exec form for proper signal handling
+# Use exec form for proper signal handling 
 CMD ["python", "-u", "main.py"]
