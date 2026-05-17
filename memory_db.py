@@ -263,6 +263,50 @@ class BotMemoryDB:
             print(f"[ERROR] Failed to set user preferences: {e}")
             return current
 
+    async def get_user_info(self, user_id):
+        """Return activity stats + prefs for a user, or None if unknown."""
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT user_id, username, first_seen, last_seen, total_messages
+                    FROM users WHERE user_id = $1
+                """, str(user_id))
+                if not row:
+                    return None
+                prefs = await self.get_user_preferences(user_id)
+                return {
+                    'user_id': row['user_id'],
+                    'username': row['username'],
+                    'first_seen': _ts(row['first_seen']),
+                    'last_seen': _ts(row['last_seen']),
+                    'total_messages': row['total_messages'],
+                    'prefs': prefs,
+                }
+        except Exception as e:
+            print(f"[ERROR] Failed to get user info: {e}")
+            return None
+
+    async def get_top_users_in_channel(self, channel_id, limit=10):
+        """Top message senders in a specific channel."""
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT c.user_id, u.username, COUNT(c.id) AS msg_count
+                    FROM conversations c
+                    LEFT JOIN users u ON u.user_id = c.user_id
+                    WHERE c.channel_id = $1 AND c.user_id IS NOT NULL
+                    GROUP BY c.user_id, u.username
+                    ORDER BY msg_count DESC
+                    LIMIT $2
+                """, str(channel_id), limit)
+                return [
+                    {'user_id': r['user_id'], 'username': r['username'], 'msg_count': r['msg_count']}
+                    for r in rows
+                ]
+        except Exception as e:
+            print(f"[ERROR] Failed to get top users: {e}")
+            return []
+
     async def reset_user_preferences(self, user_id):
         try:
             async with self.pool.acquire() as conn:

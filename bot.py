@@ -541,33 +541,144 @@ async def on_message(message):
         applied = ', '.join(f"`{k}={v}`" for k, v in updates.items())
         await message.channel.send(f"✅ Preferences updated: {applied}")
 
+    # Personal stats
+    elif message.content.lower() == '!kei me':
+        info = await memory_db.get_user_info(message.author.id)
+        if not info:
+            await message.channel.send("Belum ada data lo di DB. Coba mention bot dulu.")
+            return
+        p = info['prefs']
+        embed = discord.Embed(
+            title=f"👤 {message.author.display_name}",
+            color=0x00ff00,
+        )
+        embed.add_field(name="Member sejak", value=info['first_seen'][:10], inline=True)
+        embed.add_field(name="Terakhir aktif", value=info['last_seen'][:16], inline=True)
+        embed.add_field(name="Total messages", value=str(info['total_messages']), inline=True)
+        nick = p.get('nickname') or "(default)"
+        embed.add_field(
+            name="Preferences",
+            value=(
+                f"`lang={p['lang']}` `tone={p['tone']}` "
+                f"`length={p['response_length']}` `emoji={p['emoji_level']}` "
+                f"`nickname={nick}`"
+            ),
+            inline=False,
+        )
+        await message.channel.send(embed=embed)
+
+    # Channel leaderboard
+    elif message.content.lower().startswith('!kei top'):
+        top = await memory_db.get_top_users_in_channel(message.channel.id, limit=10)
+        if not top:
+            await message.channel.send("Belum ada data buat channel ini.")
+            return
+        ch_name = getattr(message.channel, 'name', 'DM')
+        embed = discord.Embed(title=f"🏆 Top users di #{ch_name}", color=0xffd700)
+        medals = ['🥇', '🥈', '🥉']
+        lines = []
+        for i, u in enumerate(top):
+            prefix = medals[i] if i < 3 else f"`{i+1:>2}.`"
+            name = u['username'] or f"<@{u['user_id']}>"
+            lines.append(f"{prefix} **{name}** — {u['msg_count']} msg")
+        embed.description = "\n".join(lines)
+        await message.channel.send(embed=embed)
+
+    # Admin: lookup activity for another user
+    elif message.content.startswith('!kei whois'):
+        if not (hasattr(message.author, 'guild_permissions')
+                and message.author.guild_permissions.administrator):
+            await message.channel.send("❌ Admin only.")
+            return
+        target = next((u for u in message.mentions if u != bot.user), None)
+        if not target:
+            await message.channel.send("❌ Usage: `!kei whois @user`")
+            return
+        info = await memory_db.get_user_info(target.id)
+        if not info:
+            await message.channel.send(f"Belum ada data `{target.display_name}` di DB.")
+            return
+        p = info['prefs']
+        embed = discord.Embed(
+            title=f"🔍 {target.display_name}",
+            description=f"`{target.id}`",
+            color=0x9b59b6,
+        )
+        embed.add_field(name="Member sejak", value=info['first_seen'][:10], inline=True)
+        embed.add_field(name="Terakhir aktif", value=info['last_seen'][:16], inline=True)
+        embed.add_field(name="Total messages", value=str(info['total_messages']), inline=True)
+        nick = p.get('nickname') or "(default)"
+        embed.add_field(
+            name="Preferences",
+            value=(
+                f"`lang={p['lang']}` `tone={p['tone']}` "
+                f"`length={p['response_length']}` `emoji={p['emoji_level']}` "
+                f"`nickname={nick}`"
+            ),
+            inline=False,
+        )
+        await message.channel.send(embed=embed)
+
     # Help command
     elif message.content.startswith('!kei help'):
-        help_embed = discord.Embed(title="🤖 Kei Bot Commands", color=0x00ff00)
-        help_embed.add_field(
-            name="💬 Chat Commands", 
-            value="`@Kei <question>` - Ask with full context\n`!kei ask <question>` - Ask with full context", 
-            inline=False
+        help_embed = discord.Embed(
+            title="🤖 Kei Bot Commands",
+            description="Mention `@Kei` atau pakai prefix `!kei`. Tone & bahasa response disesuaikan ke prefs lo.",
+            color=0x00ff00,
         )
         help_embed.add_field(
-            name="🗃️ Memory Commands",
-            value="`!kei search <keyword>` - Search this channel\n`!kei gsearch <keyword>` - 🌐 Global search (all channels)\n`!kei stats` - Channel statistics\n`!kei dbinfo` - Database overview",
-            inline=False
+            name="💬 Chat",
+            value=(
+                "`@Kei <pertanyaan>` — Tanya dengan full context\n"
+                "`!kei ask <pertanyaan>` — Sama, pakai prefix\n"
+                "📸 Attach gambar saat mention → bot analisis gambarnya"
+            ),
+            inline=False,
         )
         help_embed.add_field(
             name="⚙️ Preferences",
-            value="`!kei prefs` - Show your preferences\n`!kei prefs <key>=<value>` - Set prefs (lang, tone, nickname, response_length, emoji_level)\n`!kei prefs reset` - Reset to defaults",
-            inline=False
+            value=(
+                "`!kei prefs` — Lihat prefs lo\n"
+                "`!kei prefs <key>=<value> [...]` — Set (bisa multiple)\n"
+                "`!kei prefs reset` — Balik ke default\n\n"
+                "**Valid values:**\n"
+                "• `lang` — `id`, `en`, `jawa`, `sunda`  *(default: id)*\n"
+                "• `tone` — `casual`, `formal`, `santai`, `sarkas`  *(default: casual)*\n"
+                "• `response_length` — `short`, `normal`, `detailed`  *(default: short)*\n"
+                "• `emoji_level` — `none`, `minimal`, `normal`, `heavy`  *(default: minimal)*\n"
+                "• `nickname` — free text, max 32 char  *(default: Discord display name)*\n\n"
+                "Contoh: `!kei prefs lang=jawa tone=santai nickname=mas`"
+            ),
+            inline=False,
         )
         help_embed.add_field(
-            name="⚙️ Reset Commands", 
-            value="`!kei reset/clear/new` - Soft reset (preserve database)\n`!kei purge` - Hard reset (delete all data)\n`!kei status` - Show status", 
-            inline=False
+            name="👤 User",
+            value=(
+                "`!kei me` — Stats lo (member sejak, total msg, prefs)\n"
+                "`!kei top` — Leaderboard channel ini\n"
+                "`!kei whois @user` — 🔒 Admin: stats user lain"
+            ),
+            inline=False,
         )
         help_embed.add_field(
-            name="ℹ️ Info", 
-            value="`!kei help` - Show this menu", 
-            inline=False
+            name="🗃️ Memory & Search",
+            value=(
+                "`!kei search <keyword>` — Full-text search di channel ini\n"
+                "`!kei gsearch <keyword>` — Cari di semua channel\n"
+                "`!kei stats` — Statistik channel (30 hari)\n"
+                "`!kei dbinfo` — Database overview"
+            ),
+            inline=False,
+        )
+        help_embed.add_field(
+            name="🔄 Reset & Status",
+            value=(
+                "`!kei reset` / `clear` / `new` — Soft reset (DB tetap aman)\n"
+                "`!kei purge` — Hard reset (HAPUS semua data channel)\n"
+                "`!kei status` — Status channel & cache\n"
+                "`!kei help` — Menu ini"
+            ),
+            inline=False,
         )
         await message.channel.send(embed=help_embed)
     
